@@ -3,6 +3,9 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from google import genai
+from flask import Flask
+from threading import Thread
+import re
 
 from prompts import SYSTEM_PROMPT, MODE_PROMPTS, PERSONALITY_PROMPTS
 from memory import get_user, update_history
@@ -12,34 +15,26 @@ load_dotenv()
 BOT_TOKEN="7965397541:AAHhYEl4ElqO0XFZLo6CSJacInq11nUEkVM"
 GOOGLE_API_KEY="AIzaSyD5iI_UX_TZEKFjRi9bRogfPaIk1oGgwuU"
 
-
 # GEMINI CLIENT
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
-# AI FUNCTION
-import re
+# FLASK APP
+flask_app = Flask(__name__)
 
+# ----- AI FUNCTIONS -----
 def extract_length_instruction(text: str):
     text = text.lower()
-
-    # explicit line count
     match = re.search(r'(\d+)\s*lines?', text)
     if match:
         return f"Answer in exactly {match.group(1)} lines."
-
     if "short" in text:
         return "Answer in 2 to 3 lines only."
-
     if "long" in text or "detail" in text:
         return "Give a slightly detailed answer, but not too long."
-
-    # default
     return "Answer briefly in 2 to 3 lines."
 
 def ask_ai(user, message):
-    # ----- LENGTH CONTROL -----
     length_instruction = "Give a concise answer in 3–4 lines."
-
     msg_lower = message.lower()
     if "short" in msg_lower:
         length_instruction = "Give a very short answer in 2 lines."
@@ -67,7 +62,7 @@ Length Instruction:
 Conversation:
 """
 
-    for msg in user["history"][-6:]:  # last 6 msgs only
+    for msg in user["history"][-6:]:
         role = "User" if msg["role"] == "user" else "Assistant"
         convo += f"{role}: {msg['content']}\n"
 
@@ -80,9 +75,7 @@ Conversation:
 
     return response.text.strip()
 
-
-
-# COMMANDS
+# ----- TELEGRAM BOT COMMANDS -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🌌 CosmicLoveAI Activated\n\n"
@@ -93,16 +86,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_mode(update, context, mode):
     user = get_user(update.effective_user.id)
     user["mode"] = mode
-
     starter = {
         "LOVE": "Tell me something beautiful about love.",
         "QUANTUM": "Explain quantum mechanics simply.",
         "COSMOS": "Tell me about the universe."
     }
-
     reply = ask_ai(user, starter[mode])
     update_history(user, "assistant", reply)
-
     await update.message.reply_text(reply)
 
 async def set_personality(update, context, personality):
@@ -113,27 +103,36 @@ async def set_personality(update, context, personality):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_user(update.effective_user.id)
     text = update.message.text
-
     update_history(user, "user", text)
     reply = ask_ai(user, text)
     update_history(user, "assistant", reply)
-
     await update.message.reply_text(reply)
 
-# MAIN
-app = ApplicationBuilder().token(BOT_TOKEN).build()
+# ----- RUN TELEGRAM BOT IN THREAD -----
+def run_telegram_bot():
+    telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(CommandHandler("love", lambda u, c: set_mode(u, c, "LOVE")))
+    telegram_app.add_handler(CommandHandler("quantum", lambda u, c: set_mode(u, c, "QUANTUM")))
+    telegram_app.add_handler(CommandHandler("cosmos", lambda u, c: set_mode(u, c, "COSMOS")))
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("love", lambda u, c: set_mode(u, c, "LOVE")))
-app.add_handler(CommandHandler("quantum", lambda u, c: set_mode(u, c, "QUANTUM")))
-app.add_handler(CommandHandler("cosmos", lambda u, c: set_mode(u, c, "COSMOS")))
+    telegram_app.add_handler(CommandHandler("soft", lambda u, c: set_personality(u, c, "SOFT")))
+    telegram_app.add_handler(CommandHandler("poetic", lambda u, c: set_personality(u, c, "POETIC")))
+    telegram_app.add_handler(CommandHandler("scientific", lambda u, c: set_personality(u, c, "SCIENTIFIC")))
+    telegram_app.add_handler(CommandHandler("philosophical", lambda u, c: set_personality(u, c, "PHILOSOPHICAL")))
 
-app.add_handler(CommandHandler("soft", lambda u, c: set_personality(u, c, "SOFT")))
-app.add_handler(CommandHandler("poetic", lambda u, c: set_personality(u, c, "POETIC")))
-app.add_handler(CommandHandler("scientific", lambda u, c: set_personality(u, c, "SCIENTIFIC")))
-app.add_handler(CommandHandler("philosophical", lambda u, c: set_personality(u, c, "PHILOSOPHICAL")))
+    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    telegram_app.run_polling()
 
-print("🤖 CosmicLoveAI is running...")
-app.run_polling()
+Thread(target=run_telegram_bot).start()
+
+# ----- FLASK ROUTE FOR RENDER -----
+@flask_app.route('/')
+def home():
+    return "🤖 CosmicLoveAI is running on Render!"
+
+if __name__ == "__main__":
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+
